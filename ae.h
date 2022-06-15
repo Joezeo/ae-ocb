@@ -17,6 +17,8 @@
 
 #ifndef _AE_H_
 #define _AE_H_
+#include <string>
+#include <stdlib.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -182,6 +184,17 @@ int ae_decrypt(ae_ctx     *ctx,
  *                      verified that this routine did not return AE_INVALID.
  *
  * ----------------------------------------------------------------------- */
+
+using std::string;
+class CryptoException : public std::exception {
+  public:
+    string text;
+    bool fatal;
+    CryptoException( string s_text, bool s_fatal = false )
+      : text( s_text ), fatal( s_fatal ) {};
+    const char *what() const throw () { return text.c_str(); }
+    ~CryptoException() throw () {}
+  };
 
 #ifdef __cplusplus
 } /* closing brace for extern "C" */
