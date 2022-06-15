@@ -17,6 +17,7 @@
 using namespace std;
 
 #define L_TABLE_SZ          16
+#define BPI                 4
 
 #define bswap32(x)                                              \
    ((((x) & 0xff000000u) >> 24) | (((x) & 0x00ff0000u) >>  8) | \
@@ -86,10 +87,27 @@ struct _ae_ctx {
 	uint64_t KtopStr[3];                   /* Register correct, each item  */
     uint32_t ad_blocks_processed;
     uint32_t blocks_processed;
+    AES_KEY decrypt_key;
+    AES_KEY encrypt_key;
     #if (OCB_TAG_LEN == 0)
     unsigned tag_len;
     #endif
 };
+
+static block getL(const ae_ctx *ctx, unsigned tz)
+{
+    if (tz < L_TABLE_SZ)
+        return ctx->L[tz];
+    else {
+        unsigned i;
+        /* Bring L[MAX] into registers, make it register correct */
+        block rval = swap_if_le(ctx->L[L_TABLE_SZ-1]);
+        rval = double_block(rval);
+        for (i=L_TABLE_SZ; i < tz; i++)
+            rval = double_block(rval);
+        return swap_if_le(rval);             /* To memory correct */
+    }
+}
 
 /* KtopStr is reg correct by 64 bits, return mem correct */
 static block gen_offset(uint64_t KtopStr[3], unsigned bot) {
@@ -136,6 +154,11 @@ static block gen_offset_from_nonce(ae_ctx *ctx, const void *nonce) {
 						 (ctx->KtopStr[0] << 8) ^ (ctx->KtopStr[1] >> 56);
 	}
 	return gen_offset(ctx->KtopStr, idx);
+}
+
+static void process_ad(ae_ctx *ctx, const void *ad, int ad_len, int final)
+{
+    // this method is not used in fact.
 }
 
 int ae_decrypt(ae_ctx     *ctx,
