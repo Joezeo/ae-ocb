@@ -1,6 +1,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <cstring>
 #include <stdio.h>
 #include <stdlib.h>
 #include "ae.h"
@@ -14,9 +15,12 @@
 #include <sys/endian.h>
 #endif
 
+#include <openssl/aes.h>                            /* http://openssl.org/ */
+
 using namespace std;
 
 #define L_TABLE_SZ          16
+#define OCB_TAG_LEN         16
 #define BPI                 4
 
 #define bswap32(x)                                              \
@@ -74,6 +78,22 @@ static inline block double_block(block b) {
     return b;
 }
 #endif
+
+/* How to ECB encrypt an array of blocks, in place                         */
+static inline void AES_ecb_encrypt_blks(block *blks, unsigned nblks, AES_KEY *key) {
+	while (nblks) {
+		--nblks;
+		AES_encrypt((unsigned char *)(blks+nblks), (unsigned char *)(blks+nblks), key);
+	}
+}
+
+static inline void AES_ecb_decrypt_blks(block *blks, unsigned nblks, AES_KEY *key) {
+	while (nblks) {
+		--nblks;
+		AES_decrypt((unsigned char *)(blks+nblks), (unsigned char *)(blks+nblks), key);
+	}
+}
+
 
 struct _ae_ctx {
     block offset;                          /* Memory correct               */
@@ -159,6 +179,21 @@ static block gen_offset_from_nonce(ae_ctx *ctx, const void *nonce) {
 static void process_ad(ae_ctx *ctx, const void *ad, int ad_len, int final)
 {
     // this method is not used in fact.
+}
+
+static int constant_time_memcmp(const void *av, const void *bv, size_t n) {
+    const uint8_t *a = (const uint8_t *) av;
+    const uint8_t *b = (const uint8_t *) bv;
+    uint8_t result = 0;
+    size_t i;
+
+    for (i=0; i<n; i++) {
+        result |= *a ^ *b;
+        a++;
+        b++;
+    }
+
+    return (int) result;
 }
 
 int ae_decrypt(ae_ctx     *ctx,
