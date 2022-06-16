@@ -31,6 +31,8 @@ using namespace boost::archive::iterators;
 #define OCB_TAG_LEN         16
 #define BPI                 4
 
+#define DUMP_NAME_FMT "%-10s "
+
 #define bswap32(x)                                              \
    ((((x) & 0xff000000u) >> 24) | (((x) & 0x00ff0000u) >>  8) | \
     (((x) & 0x0000ff00u) <<  8) | (((x) & 0x000000ffu) << 24))
@@ -232,6 +234,125 @@ static block gen_offset_from_nonce(ae_ctx *ctx, const void *nonce) {
 static void process_ad(ae_ctx *ctx, const void *ad, int ad_len, int final)
 {
     // this method is not used in fact.
+    union { uint32_t u32[4]; uint8_t u8[16]; block bl; } tmp;
+    block ad_offset, ad_checksum;
+    const block *  adp = (block *)ad;
+	unsigned i,k,tz,remaining;
+
+    ad_offset = ctx->ad_offset;
+    ad_checksum = ctx->ad_checksum;
+    i = ad_len/(BPI*16);
+    if (i) {
+		unsigned ad_block_num = ctx->ad_blocks_processed;
+		do {
+			block ta[BPI], oa[BPI];
+			ad_block_num += BPI;
+			tz = ntz(ad_block_num);
+			oa[0] = xor_block(ad_offset, ctx->L[0]);
+			ta[0] = xor_block(oa[0], adp[0]);
+			oa[1] = xor_block(oa[0], ctx->L[1]);
+			ta[1] = xor_block(oa[1], adp[1]);
+			oa[2] = xor_block(ad_offset, ctx->L[1]);
+			ta[2] = xor_block(oa[2], adp[2]);
+			#if BPI == 4
+				ad_offset = xor_block(oa[2], getL(ctx, tz));
+				ta[3] = xor_block(ad_offset, adp[3]);
+			#elif BPI == 8
+				oa[3] = xor_block(oa[2], ctx->L[2]);
+				ta[3] = xor_block(oa[3], adp[3]);
+				oa[4] = xor_block(oa[1], ctx->L[2]);
+				ta[4] = xor_block(oa[4], adp[4]);
+				oa[5] = xor_block(oa[0], ctx->L[2]);
+				ta[5] = xor_block(oa[5], adp[5]);
+				oa[6] = xor_block(ad_offset, ctx->L[2]);
+				ta[6] = xor_block(oa[6], adp[6]);
+				ad_offset = xor_block(oa[6], getL(ctx, tz));
+				ta[7] = xor_block(ad_offset, adp[7]);
+			#endif
+			AES_ecb_encrypt_blks(ta,BPI,&ctx->encrypt_key);
+			ad_checksum = xor_block(ad_checksum, ta[0]);
+			ad_checksum = xor_block(ad_checksum, ta[1]);
+			ad_checksum = xor_block(ad_checksum, ta[2]);
+			ad_checksum = xor_block(ad_checksum, ta[3]);
+			#if (BPI == 8)
+			ad_checksum = xor_block(ad_checksum, ta[4]);
+			ad_checksum = xor_block(ad_checksum, ta[5]);
+			ad_checksum = xor_block(ad_checksum, ta[6]);
+			ad_checksum = xor_block(ad_checksum, ta[7]);
+			#endif
+			adp += BPI;
+		} while (--i);
+		ctx->ad_blocks_processed = ad_block_num;
+		ctx->ad_offset = ad_offset;
+		ctx->ad_checksum = ad_checksum;
+	}
+
+    if (final) {
+		block ta[BPI];
+
+        /* Process remaining associated data, compute its tag contribution */
+        remaining = ((unsigned)ad_len) % (BPI*16);
+        if (remaining) {
+			k=0;
+			#if (BPI == 8)
+			if (remaining >= 64) {
+				tmp.bl = xor_block(ad_offset, ctx->L[0]);
+				ta[0] = xor_block(tmp.bl, adp[0]);
+				tmp.bl = xor_block(tmp.bl, ctx->L[1]);
+				ta[1] = xor_block(tmp.bl, adp[1]);
+				ad_offset = xor_block(ad_offset, ctx->L[1]);
+				ta[2] = xor_block(ad_offset, adp[2]);
+				ad_offset = xor_block(ad_offset, ctx->L[2]);
+				ta[3] = xor_block(ad_offset, adp[3]);
+				remaining -= 64;
+				k=4;
+			}
+			#endif
+			if (remaining >= 32) {
+				ad_offset = xor_block(ad_offset, ctx->L[0]);
+				ta[k] = xor_block(ad_offset, adp[k]);
+				ad_offset = xor_block(ad_offset, getL(ctx, ntz(k+2)));
+				ta[k+1] = xor_block(ad_offset, adp[k+1]);
+				remaining -= 32;
+				k+=2;
+			}
+			if (remaining >= 16) {
+				ad_offset = xor_block(ad_offset, ctx->L[0]);
+				ta[k] = xor_block(ad_offset, adp[k]);
+				remaining = remaining - 16;
+				++k;
+			}
+			if (remaining) {
+				ad_offset = xor_block(ad_offset,ctx->Lstar);
+				tmp.bl = zero_block();
+				memcpy(tmp.u8, adp+k, remaining);
+				tmp.u8[remaining] = (unsigned char)0x80u;
+				ta[k] = xor_block(ad_offset, tmp.bl);
+				++k;
+			}
+			AES_ecb_encrypt_blks(ta,k,&ctx->encrypt_key);
+			switch (k) {
+				#if (BPI == 8)
+				case 8: ad_checksum = xor_block(ad_checksum, ta[7]);
+					/* fallthrough */
+				case 7: ad_checksum = xor_block(ad_checksum, ta[6]);
+					/* fallthrough */
+				case 6: ad_checksum = xor_block(ad_checksum, ta[5]);
+					/* fallthrough */
+				case 5: ad_checksum = xor_block(ad_checksum, ta[4]);
+					/* fallthrough */
+				#endif
+				case 4: ad_checksum = xor_block(ad_checksum, ta[3]);
+					/* fallthrough */
+				case 3: ad_checksum = xor_block(ad_checksum, ta[2]);
+					/* fallthrough */
+				case 2: ad_checksum = xor_block(ad_checksum, ta[1]);
+					/* fallthrough */
+				case 1: ad_checksum = xor_block(ad_checksum, ta[0]);
+			}
+			ctx->ad_checksum = ad_checksum;
+		}
+	}
 }
 
 static int constant_time_memcmp(const void *av, const void *bv, size_t n) {
@@ -692,15 +813,33 @@ const Message Session::decrypt( const char *str, size_t len )
   return ret;
 }
 
+void hexdump( const void *buf, size_t len, const char *name ) {
+  const unsigned char *data = (const unsigned char *) buf;
+  printf( DUMP_NAME_FMT, name );
+  for ( size_t i = 0; i < len; i++ ) {
+    printf( "%02x", data[ i ] );
+  }
+  printf( "\n" );
+}
+
+void hexdump( const std::string &buf, const char *name ) {
+  hexdump( buf.data(), buf.size(), name );
+}
+
 int main(int argc, const char** argv) {
+	const union { unsigned x; unsigned char endian; } little = { 1 };
+    if (little.endian) {
+        cout << "Litter endian." << endl;
+    }
     string base64 = "4UVV8YWRGg1kBxAlhQ09ZA";
-    string content = "gAAAAAAAAAUGgH9dvmmt+jBp6WwNCx2Wb52S+ZpnTFKdkmZEUdrRPbei/eosmmaUF9uorZufiDke8e2x1J/d1Las6Pc188tvnS1nyEpkvBkbg7JDFyxByV355LqL1oRwwpQn64elhjhqtSk559AI06qMe/V8vM6WfrbECAwnuR5COUF7dGV6Us1RoIOAr4V/+JBIfoFrozJnEg==";
+    string content = "gAAAAAAAAACnDqhhT8z2XVfl8gawHl5NFG3opTmDxEvxLE92qegsXJQFJT/bTHSBb0GiGxDNO632pci7vW+bZ7gy1+250WcSsl2dBC79wrv+K002cgnY+OptLqOnM7PUAUNwHmOplCR/HZ8D0zgrIIYPWP8UFVqFhwi4cu9/rYMDZbMMwZuVUJKRjRuHOfx6CW8cw9gY2Q==";
+    // string content = "gAAAAAAAAAUGgH9dvmmt+jBp6WwNCx2Wb52S+ZpnTFKdkmZEUdrRPbei/eosmmaUF9uorZufiDke8e2x1J/d1Las6Pc188tvnS1nyEpkvBkbg7JDFyxByV355LqL1oRwwpQn64elhjhqtSk559AI06qMe/V8vM6WfrbECAwnuR5COUF7dGV6Us1RoIOAr4V/+JBIfoFrozJnEg==";
     string src;
     bool suc = Base64Decode(content, &src);
-    src = src.substr(0, src.length() - 2);
+    src = src.substr(0, src.size() - 2);
     if (suc) {
         cout << "Base64 decode content success." << endl;
-        for (int i = 0; i < src.length(); i++) {
+        for (int i = 0; i < src.size(); i++) {
             printf("%d ", src.data()[i]);
         }
         cout << endl;
@@ -708,8 +847,18 @@ int main(int argc, const char** argv) {
         throw CryptoException( "Base64 decode content failed." );
     }
 
+    // hexdump(src, "ct");
+
     Base64Key key(base64);
     Session session(key);
-    session.decrypt(src);
+
+    try {
+        session.decrypt(src);
+    } catch ( const CryptoException &e ) {
+        cout << "CryptoExcetion catched." << endl;
+        /* The "bad decrypt" exception needs to be non-fatal, otherwise we are
+        vulnerable to an easy DoS. */
+        fatal_assert( ! e.fatal );
+    }
 }
 
