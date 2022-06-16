@@ -22,10 +22,17 @@
 #include "base64.h"
 #include "fatal_assert.h"
 #include "crypto.h"
+#include "prng.h"
 
 using namespace std;
 using namespace Crypto;
 using namespace boost::archive::iterators;
+
+PRNG prng;
+ 
+const size_t MESSAGE_SIZE_MAX     = (2048 - 16);
+const size_t MESSAGES_PER_SESSION = 256;
+const size_t NUM_SESSIONS         = 64;
 
 #define L_TABLE_SZ          16
 #define OCB_TAG_LEN         16
@@ -1066,6 +1073,32 @@ void hexdump( const std::string &buf, const char *name ) {
   hexdump( buf.data(), buf.size(), name );
 }
 
+static std::string random_payload( void ) {
+  const size_t len = prng.uint32() % MESSAGE_SIZE_MAX;
+  char buf[ MESSAGE_SIZE_MAX ];
+  prng.fill( buf, len );
+
+  std::string payload( buf, len );
+  return payload;
+}
+
+static void test_bad_decrypt( Session &decryption_session ) {
+  std::string bad_ct = random_payload();
+
+  bool got_exn = false;
+  try {
+    decryption_session.decrypt( bad_ct );
+  } catch ( const CryptoException &e ) {
+    got_exn = true;
+
+    /* The "bad decrypt" exception needs to be non-fatal, otherwise we are
+       vulnerable to an easy DoS. */
+    fatal_assert( ! e.fatal );
+  }
+
+  fatal_assert( got_exn );
+}
+
 int main(int argc, const char** argv) {
 	const union { unsigned x; unsigned char endian; } little = { 1 };
     if (little.endian) {
@@ -1099,6 +1132,32 @@ int main(int argc, const char** argv) {
         /* The "bad decrypt" exception needs to be non-fatal, otherwise we are
         vulnerable to an easy DoS. */
         fatal_assert( ! e.fatal );
+    }
+
+    Session encryption_session( key );
+    Session decryption_session( key );
+
+    uint64_t nonce_int = prng.uint64();
+
+    for ( size_t i=0; i<MESSAGES_PER_SESSION; i++ ) {
+        Nonce nonce( nonce_int );
+        fatal_assert( nonce.val() == nonce_int );
+
+        std::string plaintext = random_payload();
+
+        std::string ciphertext = encryption_session.encrypt( Message( nonce, plaintext ) );
+
+        Message decrypted = decryption_session.decrypt( ciphertext );
+
+        fatal_assert( decrypted.nonce.val() == nonce_int );
+        fatal_assert( decrypted.text == plaintext );
+
+        nonce_int++;
+
+        if ( ! ( prng.uint8() % 16 ) ) {
+            test_bad_decrypt( decryption_session );
+        }
+
     }
 }
 
