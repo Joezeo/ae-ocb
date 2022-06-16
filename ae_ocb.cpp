@@ -18,8 +18,10 @@
 
 #include "base64.h"
 #include "fatal_assert.h"
+#include "crypto.h"
 
 using namespace std;
+using namespace Crypto;
 
 #define L_TABLE_SZ          16
 #define OCB_TAG_LEN         16
@@ -29,6 +31,7 @@ using namespace std;
    ((((x) & 0xff000000u) >> 24) | (((x) & 0x00ff0000u) >>  8) | \
     (((x) & 0x0000ff00u) <<  8) | (((x) & 0x000000ffu) << 24))
 
+// ocb.h\ocb.cc
 static inline uint64_t bswap64(uint64_t x) {
     union { uint64_t u64; uint32_t u32[2]; } in, out;
     in.u64 = x;
@@ -144,6 +147,59 @@ static block gen_offset(uint64_t KtopStr[3], unsigned bot) {
     return swap_if_le(rval);
 }
 
+int ae_clear (ae_ctx *ctx) /* Zero ae_ctx and undo initialization          */
+{
+	memset(ctx, 0, sizeof(ae_ctx));
+	return AE_SUCCESS;
+}
+
+int ae_ctx_sizeof(void) { return (int) sizeof(ae_ctx); }
+
+int ae_init(ae_ctx *ctx, const void *key, int key_len, int nonce_len, int tag_len)
+{
+    unsigned i;
+    block tmp_blk;
+
+    if (nonce_len != 12)
+    	return AE_NOT_SUPPORTED;
+
+    /* Initialize encryption & decryption keys */
+    #if (OCB_KEY_LEN > 0)
+    key_len = OCB_KEY_LEN;
+    #endif
+    AES_set_encrypt_key((unsigned char *)key, key_len*8, &ctx->encrypt_key);
+    #if USE_AES_NI
+    AES_set_decrypt_key_fast(&ctx->decrypt_key,&ctx->encrypt_key);
+    #else
+    AES_set_decrypt_key((unsigned char *)key, (int)(key_len*8), &ctx->decrypt_key);
+    #endif
+
+    /* Zero things that need zeroing */
+    ctx->cached_Top = ctx->ad_checksum = zero_block();
+    ctx->ad_blocks_processed = 0;
+
+    /* Compute key-dependent values */
+    AES_encrypt((unsigned char *)&ctx->cached_Top,
+                            (unsigned char *)&ctx->Lstar, &ctx->encrypt_key);
+    tmp_blk = swap_if_le(ctx->Lstar);
+    tmp_blk = double_block(tmp_blk);
+    ctx->Ldollar = swap_if_le(tmp_blk);
+    tmp_blk = double_block(tmp_blk);
+    ctx->L[0] = swap_if_le(tmp_blk);
+    for (i = 1; i < L_TABLE_SZ; i++) {
+		tmp_blk = double_block(tmp_blk);
+    	ctx->L[i] = swap_if_le(tmp_blk);
+    }
+
+    #if (OCB_TAG_LEN == 0)
+    	ctx->tag_len = tag_len;
+    #else
+    	(void) tag_len;  /* Suppress var not used error */
+    #endif
+
+    return AE_SUCCESS;
+}
+
 static block gen_offset_from_nonce(ae_ctx *ctx, const void *nonce) {
 	const union { unsigned x; unsigned char endian; } little = { 1 };
 	union { uint32_t u32[4]; uint8_t u8[16]; block bl; } tmp;
@@ -155,16 +211,7 @@ static block gen_offset_from_nonce(ae_ctx *ctx, const void *nonce) {
 	tmp.u32[2] = ((uint32_t *)nonce)[1];
 	tmp.u32[3] = ((uint32_t *)nonce)[2];
 	idx = (unsigned)(tmp.u8[15] & 0x3f);   /* Get low 6 bits of nonce  */
-
-    cout << "gen offset from nonce -> idx = " << idx << endl;
-
 	tmp.u8[15] = tmp.u8[15] & 0xc0;        /* Zero low 6 bits of nonce */
-    cout << "print the tmp.u8:" << endl;
-    for (int i = 0; i<end(tmp.u8)-begin(tmp.u8); i++) {
-        cout << tmp.u8[i] << " ";
-    }
-    cout << endl;
-
 	if ( unequal_blocks(tmp.bl,ctx->cached_Top) )   { /* Cached?       */
 		ctx->cached_Top = tmp.bl;          /* Update cache, KtopStr    */
 		// AES_encrypt(tmp.u8, (unsigned char *)&ctx->KtopStr, &ctx->encrypt_key);
@@ -478,38 +525,159 @@ void base64_encode( const uint8_t *raw, const size_t raw_len,
   b64[3] = '=';
 }
 
-class AlignedBuffer {
-  private:
-    size_t m_len;
-    void *m_allocated;
-    char *m_data;
+AlignedBuffer::AlignedBuffer( size_t len, const char *data )
+  : m_len( len ), m_allocated( NULL ), m_data( NULL )
+{
+  size_t alloc_len = len ? len : 1;
+#if defined(HAVE_POSIX_MEMALIGN)
+  if ( ( 0 != posix_memalign( &m_allocated, 16, alloc_len ) )
+      || ( m_allocated == NULL ) ) {
+    throw std::bad_alloc();
+  }
+  m_data = (char *) m_allocated;
 
-  public:
-    AlignedBuffer( size_t len, const char *data = NULL );
+#else
+  /* malloc() a region 15 bytes larger than we need, and find
+     the aligned offset within. */
+  m_allocated = malloc( 15 + alloc_len );
+  if ( m_allocated == NULL ) {
+    throw std::bad_alloc();
+  }
 
-    ~AlignedBuffer() {
-      free( m_allocated );
-    }
+  uintptr_t iptr = (uintptr_t) m_allocated;
+  if ( iptr & 0xF ) {
+    iptr += 16 - ( iptr & 0xF );
+  }
 
-    char * data( void ) const { return m_data; }
-    size_t len( void )  const { return m_len;  }
+  m_data = (char *) iptr;
 
-  private:
-    /* Not implemented */
-    AlignedBuffer( const AlignedBuffer & );
-    AlignedBuffer & operator=( const AlignedBuffer & );
-  };
+#endif /* !defined(HAVE_POSIX_MEMALIGN) */
+
+  if ( data ) {
+    memcpy( m_data, data, len );
+  }
+}
+
+Base64Key::Base64Key( string printable_key )
+{
+  if ( printable_key.length() != 22 ) {
+    throw CryptoException( "Key must be 22 letters long." );
+  }
+
+  string base64 = printable_key + "==";
+
+  size_t len = 16;
+  if ( !base64_decode( base64.data(), 24, key, &len ) ) {
+    throw CryptoException( "Key must be well-formed base64." );
+  }
+
+  if ( len != 16 ) {
+    throw CryptoException( "Key must represent 16 octets." );
+  }
+
+  /* to catch changes after the first 128 bits */
+  if ( printable_key != this->printable_key() ) {
+    throw CryptoException( "Base64 key was not encoded 128-bit key." );
+  }
+}
+
+string Base64Key::printable_key( void ) const
+{
+  char base64[ 24 ];
+
+  base64_encode( key, 16, base64, 24 );
+
+  if ( (base64[ 23 ] != '=')
+       || (base64[ 22 ] != '=') ) {
+    throw CryptoException( string( "Unexpected output from base64_encode: " ) + string( base64, 24 ) );
+  }
+
+  base64[ 22 ] = 0;
+  return string( base64 );
+}
+
+Session::Session( Base64Key s_key )
+  : key( s_key ), ctx_buf( ae_ctx_sizeof() ),
+    ctx( (ae_ctx *)ctx_buf.data() ), blocks_encrypted( 0 ),
+    plaintext_buffer( RECEIVE_MTU ),
+    ciphertext_buffer( RECEIVE_MTU ),
+    nonce_buffer( Nonce::NONCE_LEN )
+{
+  if ( AE_SUCCESS != ae_init( ctx, key.data(), 16, 12, 16 ) ) {
+    throw CryptoException( "Could not initialize AES-OCB context." );
+  }
+}
+
+Session::~Session()
+{
+  fatal_assert( ae_clear( ctx ) == AE_SUCCESS );
+}
+
+Nonce::Nonce( uint64_t val )
+{
+  uint64_t val_net = htobe64( val );
+
+  memset( bytes, 0, 4 );
+  memcpy( bytes + 4, &val_net, 8 );
+}
+
+uint64_t Nonce::val( void ) const
+{
+  uint64_t ret;
+  memcpy( &ret, bytes + 4, 8 );
+  return be64toh( ret );
+}
+
+Nonce::Nonce( const char *s_bytes, size_t len )
+{
+  if ( len != 8 ) {
+    throw CryptoException( "Nonce representation must be 8 octets long." );
+  }
+
+  memset( bytes, 0, 4 );
+  memcpy( bytes + 4, s_bytes, 8 );
+}
+
+const Message Session::decrypt( const char *str, size_t len )
+{
+  if ( len < 24 ) {
+    throw CryptoException( "Ciphertext must contain nonce and tag." );
+  }
+
+  int body_len = len - 8;
+  int pt_len = body_len - 16;
+
+  if ( pt_len < 0 ) { /* super-assertion that pt_len does not equal AE_INVALID */
+    fprintf( stderr, "BUG.\n" );
+    exit( 1 );
+  }
+
+  Nonce nonce( str, 8 );
+  memcpy( ciphertext_buffer.data(), str + 8, body_len );
+  memcpy( nonce_buffer.data(), nonce.data(), Nonce::NONCE_LEN );
+
+  if ( pt_len != ae_decrypt( ctx,                      /* ctx */
+			     nonce_buffer.data(),      /* nonce */
+			     ciphertext_buffer.data(), /* ct */
+			     body_len,                 /* ct_len */
+			     NULL,                     /* ad */
+			     0,                        /* ad_len */
+			     plaintext_buffer.data(),  /* pt */
+			     NULL,                     /* tag */
+			     AE_FINALIZE ) ) {         /* final */
+    throw CryptoException( "Packet failed integrity check." );
+  }
+
+  const Message ret( nonce, string( plaintext_buffer.data(), pt_len ) );
+
+  return ret;
+}
 
 int main(int argc, const char** argv) {
-    unsigned char key[ 16 ];
-    string base64 = "4UVV8YWRGg1kBxAlhQ09ZA==";
+    string base64 = "4UVV8YWRGg1kBxAlhQ09ZA";
 
-    size_t len = 16;
-
-    if ( !base64_decode( base64.data(), 24, key, &len ) ) {
-        throw CryptoException( "Key must be well-formed base64." );
-    } else {
-        cout << "Initialise aes key success." << endl;
-    }
+    Base64Key key(base64);
+    Session session(key);
+    session.decrypt("Hello", 5);
 }
 
