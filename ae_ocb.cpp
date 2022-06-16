@@ -370,6 +370,196 @@ static int constant_time_memcmp(const void *av, const void *bv, size_t n) {
     return (int) result;
 }
 
+int ae_encrypt(ae_ctx     *  ctx,
+               const void *  nonce,
+               const void *pt,
+               int         pt_len,
+               const void *ad,
+               int         ad_len,
+               void       *ct,
+               void       *tag,
+               int         final)
+{
+	union { uint32_t u32[4]; uint8_t u8[16]; block bl; } tmp;
+    block offset, checksum;
+    unsigned i, k;
+    block       * ctp = (block *)ct;
+    const block * ptp = (block *)pt;
+
+    /* Non-null nonce means start of new message, init per-message values */
+    if (nonce) {
+        ctx->offset = gen_offset_from_nonce(ctx, nonce);
+        ctx->ad_offset = ctx->checksum   = zero_block();
+        ctx->ad_blocks_processed = ctx->blocks_processed    = 0;
+        if (ad_len >= 0)
+        	ctx->ad_checksum = zero_block();
+    }
+
+	/* Process associated data */
+	if (ad_len > 0)
+		process_ad(ctx, ad, ad_len, final);
+
+	/* Encrypt plaintext data BPI blocks at a time */
+    offset = ctx->offset;
+    checksum  = ctx->checksum;
+    i = pt_len/(BPI*16);
+    if (i) {
+    	block oa[BPI];
+    	unsigned block_num = ctx->blocks_processed;
+    	oa[BPI-1] = offset;
+		do {
+			block ta[BPI];
+			block_num += BPI;
+			oa[0] = xor_block(oa[BPI-1], ctx->L[0]);
+			ta[0] = xor_block(oa[0], ptp[0]);
+			checksum = xor_block(checksum, ptp[0]);
+			oa[1] = xor_block(oa[0], ctx->L[1]);
+			ta[1] = xor_block(oa[1], ptp[1]);
+			checksum = xor_block(checksum, ptp[1]);
+			oa[2] = xor_block(oa[1], ctx->L[0]);
+			ta[2] = xor_block(oa[2], ptp[2]);
+			checksum = xor_block(checksum, ptp[2]);
+			#if BPI == 4
+				oa[3] = xor_block(oa[2], getL(ctx, ntz(block_num)));
+				ta[3] = xor_block(oa[3], ptp[3]);
+				checksum = xor_block(checksum, ptp[3]);
+			#elif BPI == 8
+				oa[3] = xor_block(oa[2], ctx->L[2]);
+				ta[3] = xor_block(oa[3], ptp[3]);
+				checksum = xor_block(checksum, ptp[3]);
+				oa[4] = xor_block(oa[1], ctx->L[2]);
+				ta[4] = xor_block(oa[4], ptp[4]);
+				checksum = xor_block(checksum, ptp[4]);
+				oa[5] = xor_block(oa[0], ctx->L[2]);
+				ta[5] = xor_block(oa[5], ptp[5]);
+				checksum = xor_block(checksum, ptp[5]);
+				oa[6] = xor_block(oa[7], ctx->L[2]);
+				ta[6] = xor_block(oa[6], ptp[6]);
+				checksum = xor_block(checksum, ptp[6]);
+				oa[7] = xor_block(oa[6], getL(ctx, ntz(block_num)));
+				ta[7] = xor_block(oa[7], ptp[7]);
+				checksum = xor_block(checksum, ptp[7]);
+			#endif
+			AES_ecb_encrypt_blks(ta,BPI,&ctx->encrypt_key);
+			ctp[0] = xor_block(ta[0], oa[0]);
+			ctp[1] = xor_block(ta[1], oa[1]);
+			ctp[2] = xor_block(ta[2], oa[2]);
+			ctp[3] = xor_block(ta[3], oa[3]);
+			#if (BPI == 8)
+			ctp[4] = xor_block(ta[4], oa[4]);
+			ctp[5] = xor_block(ta[5], oa[5]);
+			ctp[6] = xor_block(ta[6], oa[6]);
+			ctp[7] = xor_block(ta[7], oa[7]);
+			#endif
+			ptp += BPI;
+			ctp += BPI;
+		} while (--i);
+    	ctx->offset = offset = oa[BPI-1];
+	    ctx->blocks_processed = block_num;
+		ctx->checksum = checksum;
+    }
+
+    if (final) {
+		block ta[BPI+1], oa[BPI];
+
+        /* Process remaining plaintext and compute its tag contribution    */
+        unsigned remaining = ((unsigned)pt_len) % (BPI*16);
+        k = 0;                      /* How many blocks in ta[] need ECBing */
+        if (remaining) {
+			#if (BPI == 8)
+			if (remaining >= 64) {
+				oa[0] = xor_block(offset, ctx->L[0]);
+				ta[0] = xor_block(oa[0], ptp[0]);
+				checksum = xor_block(checksum, ptp[0]);
+				oa[1] = xor_block(oa[0], ctx->L[1]);
+				ta[1] = xor_block(oa[1], ptp[1]);
+				checksum = xor_block(checksum, ptp[1]);
+				oa[2] = xor_block(oa[1], ctx->L[0]);
+				ta[2] = xor_block(oa[2], ptp[2]);
+				checksum = xor_block(checksum, ptp[2]);
+				offset = oa[3] = xor_block(oa[2], ctx->L[2]);
+				ta[3] = xor_block(offset, ptp[3]);
+				checksum = xor_block(checksum, ptp[3]);
+				remaining -= 64;
+				k = 4;
+			}
+			#endif
+			if (remaining >= 32) {
+				oa[k] = xor_block(offset, ctx->L[0]);
+				ta[k] = xor_block(oa[k], ptp[k]);
+				checksum = xor_block(checksum, ptp[k]);
+				offset = oa[k+1] = xor_block(oa[k], ctx->L[1]);
+				ta[k+1] = xor_block(offset, ptp[k+1]);
+				checksum = xor_block(checksum, ptp[k+1]);
+				remaining -= 32;
+				k+=2;
+			}
+			if (remaining >= 16) {
+				offset = oa[k] = xor_block(offset, ctx->L[0]);
+				ta[k] = xor_block(offset, ptp[k]);
+				checksum = xor_block(checksum, ptp[k]);
+				remaining -= 16;
+				++k;
+			}
+			if (remaining) {
+				tmp.bl = zero_block();
+				memcpy(tmp.u8, ptp+k, remaining);
+				tmp.u8[remaining] = (unsigned char)0x80u;
+				checksum = xor_block(checksum, tmp.bl);
+				ta[k] = offset = xor_block(offset,ctx->Lstar);
+				++k;
+			}
+		}
+        offset = xor_block(offset, ctx->Ldollar);      /* Part of tag gen */
+        ta[k] = xor_block(offset, checksum);           /* Part of tag gen */
+		AES_ecb_encrypt_blks(ta,k+1,&ctx->encrypt_key);
+		offset = xor_block(ta[k], ctx->ad_checksum);   /* Part of tag gen */
+		if (remaining) {
+			--k;
+			tmp.bl = xor_block(tmp.bl, ta[k]);
+			memcpy(ctp+k, tmp.u8, remaining);
+		}
+		switch (k) {
+			#if (BPI == 8)
+			case 7: ctp[6] = xor_block(ta[6], oa[6]);
+				/* fallthrough */
+			case 6: ctp[5] = xor_block(ta[5], oa[5]);
+				/* fallthrough */
+			case 5: ctp[4] = xor_block(ta[4], oa[4]);
+				/* fallthrough */
+			case 4: ctp[3] = xor_block(ta[3], oa[3]);
+				/* fallthrough */
+			#endif
+			case 3: ctp[2] = xor_block(ta[2], oa[2]);
+				/* fallthrough */
+			case 2: ctp[1] = xor_block(ta[1], oa[1]);
+				/* fallthrough */
+			case 1: ctp[0] = xor_block(ta[0], oa[0]);
+		}
+
+        /* Tag is placed at the correct location
+         */
+        if (tag) {
+			#if (OCB_TAG_LEN == 16)
+            	*(block *)tag = offset;
+			#elif (OCB_TAG_LEN > 0)
+	            memcpy((char *)tag, &offset, OCB_TAG_LEN);
+			#else
+	            memcpy((char *)tag, &offset, ctx->tag_len);
+	        #endif
+        } else {
+			#if (OCB_TAG_LEN > 0)
+	            memcpy((char *)ct + pt_len, &offset, OCB_TAG_LEN);
+            	pt_len += OCB_TAG_LEN;
+			#else
+	            memcpy((char *)ct + pt_len, &offset, ctx->tag_len);
+            	pt_len += ctx->tag_len;
+	        #endif
+        }
+    }
+    return (int) pt_len;
+}
+
 int ae_decrypt(ae_ctx     *ctx,
                const void *nonce,
                const void *ct,
@@ -778,6 +968,56 @@ Nonce::Nonce( const char *s_bytes, size_t len )
   memcpy( bytes + 4, s_bytes, 8 );
 }
 
+const string Session::encrypt( const Message & plaintext )
+{
+  const size_t pt_len = plaintext.text.size();
+  const int ciphertext_len = pt_len + 16;
+
+  assert( (size_t)ciphertext_len <= ciphertext_buffer.len() );
+  assert( pt_len <= plaintext_buffer.len() );
+
+  memcpy( plaintext_buffer.data(), plaintext.text.data(), pt_len );
+  memcpy( nonce_buffer.data(), plaintext.nonce.data(), Nonce::NONCE_LEN );
+
+  if ( ciphertext_len != ae_encrypt( ctx,                                     /* ctx */
+				     nonce_buffer.data(),                     /* nonce */
+				     plaintext_buffer.data(),                 /* pt */
+				     pt_len,                                  /* pt_len */
+				     NULL,                                    /* ad */
+				     0,                                       /* ad_len */
+				     ciphertext_buffer.data(),                /* ct */
+				     NULL,                                    /* tag */
+				     AE_FINALIZE ) ) {                        /* final */
+    throw CryptoException( "ae_encrypt() returned error." );
+  }
+
+  blocks_encrypted += pt_len >> 4;
+  if ( pt_len & 0xF ) {
+    /* partial block */
+    blocks_encrypted++;
+  }
+
+  /* "Both the privacy and the authenticity properties of OCB degrade as
+      per s^2 / 2^128, where s is the total number of blocks that the
+      adversary acquires.... In order to ensure that s^2 / 2^128 remains
+      small, a given key should be used to encrypt at most 2^48 blocks (2^55
+      bits or 4 petabytes)"
+
+     -- http://tools.ietf.org/html/draft-krovetz-ocb-03
+
+     We deem it unlikely that a legitimate user will send 4 PB through a Mosh
+     session.  If it happens, we simply kill the session.  The server and
+     client use the same key, so we actually need to die after 2^47 blocks.
+  */
+  if ( blocks_encrypted >> 47 ) {
+    throw CryptoException( "Encrypted 2^47 blocks.", true );
+  }
+
+  string text( ciphertext_buffer.data(), ciphertext_len );
+
+  return plaintext.nonce.cc_str() + text;
+}
+
 const Message Session::decrypt( const char *str, size_t len )
 {
   if ( len < 24 ) {
@@ -832,8 +1072,8 @@ int main(int argc, const char** argv) {
         cout << "Litter endian." << endl;
     }
     string base64 = "4UVV8YWRGg1kBxAlhQ09ZA";
-    string content = "gAAAAAAAAACnDqhhT8z2XVfl8gawHl5NFG3opTmDxEvxLE92qegsXJQFJT/bTHSBb0GiGxDNO632pci7vW+bZ7gy1+250WcSsl2dBC79wrv+K002cgnY+OptLqOnM7PUAUNwHmOplCR/HZ8D0zgrIIYPWP8UFVqFhwi4cu9/rYMDZbMMwZuVUJKRjRuHOfx6CW8cw9gY2Q==";
-    // string content = "gAAAAAAAAAUGgH9dvmmt+jBp6WwNCx2Wb52S+ZpnTFKdkmZEUdrRPbei/eosmmaUF9uorZufiDke8e2x1J/d1Las6Pc188tvnS1nyEpkvBkbg7JDFyxByV355LqL1oRwwpQn64elhjhqtSk559AI06qMe/V8vM6WfrbECAwnuR5COUF7dGV6Us1RoIOAr4V/+JBIfoFrozJnEg==";
+    // string content = "gAAAAAAAAACnDqhhT8z2XVfl8gawHl5NFG3opTmDxEvxLE92qegsXJQFJT/bTHSBb0GiGxDNO632pci7vW+bZ7gy1+250WcSsl2dBC79wrv+K002cgnY+OptLqOnM7PUAUNwHmOplCR/HZ8D0zgrIIYPWP8UFVqFhwi4cu9/rYMDZbMMwZuVUJKRjRuHOfx6CW8cw9gY2Q==";
+    string content = "gAAAAAAAAAUGgH9dvmmt+jBp6WwNCx2Wb52S+ZpnTFKdkmZEUdrRPbei/eosmmaUF9uorZufiDke8e2x1J/d1Las6Pc188tvnS1nyEpkvBkbg7JDFyxByV355LqL1oRwwpQn64elhjhqtSk559AI06qMe/V8vM6WfrbECAwnuR5COUF7dGV6Us1RoIOAr4V/+JBIfoFrozJnEg==";
     string src;
     bool suc = Base64Decode(content, &src);
     src = src.substr(0, src.size() - 2);
