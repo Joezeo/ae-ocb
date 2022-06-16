@@ -1,3 +1,6 @@
+#include <boost/archive/iterators/base64_from_binary.hpp>
+#include <boost/archive/iterators/binary_from_base64.hpp> 
+#include <boost/archive/iterators/transform_width.hpp> 
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -22,6 +25,7 @@
 
 using namespace std;
 using namespace Crypto;
+using namespace boost::archive::iterators;
 
 #define L_TABLE_SZ          16
 #define OCB_TAG_LEN         16
@@ -442,9 +446,10 @@ int ae_decrypt(ae_ctx     *ctx,
     return ct_len;
  }
 
+// base64 enconding
 static const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-static const unsigned char reverse[] = {
+static const unsigned char reverse_mosh[] = {
   0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
   0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
   0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x3e, 0xff, 0xff, 0xff, 0x3f,
@@ -466,10 +471,10 @@ static const unsigned char reverse[] = {
 /* Reverse maps from an ASCII char to a base64 sixbit value.  Returns > 0x3f on failure. */
 static unsigned char base64_char_to_sixbit(unsigned char c)
 {
-  return reverse[c];
+  return reverse_mosh[c];
 }
 
-bool base64_decode( const char *b64, const size_t b64_len,
+bool base64_decode_mosh( const char *b64, const size_t b64_len,
 		    uint8_t *raw, size_t *raw_len )
 {
   fatal_assert( b64_len == 24 ); /* only useful for Mosh keys */
@@ -500,7 +505,7 @@ bool base64_decode( const char *b64, const size_t b64_len,
   return true;
 }
 
-void base64_encode( const uint8_t *raw, const size_t raw_len,
+void base64_encode_mosh( const uint8_t *raw, const size_t raw_len,
 		    char *b64, const size_t b64_len )
 {
   fatal_assert( b64_len == 24 ); /* only useful for Mosh keys */
@@ -525,6 +530,20 @@ void base64_encode( const uint8_t *raw, const size_t raw_len,
   b64[3] = '=';
 }
 
+bool Base64Decode(const std::string& input, std::string* output) {
+	typedef boost::archive::iterators::transform_width<boost::archive::iterators::binary_from_base64<std::string::const_iterator>, 8, 6> Base64DecodeIterator;
+	std::stringstream result;
+	try {
+		copy(Base64DecodeIterator(input.begin()), Base64DecodeIterator(input.end()), ostream_iterator<char>(result));
+	}
+	catch (...) {
+		return false;
+	}
+	*output = result.str();
+	return output->empty() == false;
+}
+
+// crypto.h\crypto.cc
 AlignedBuffer::AlignedBuffer( size_t len, const char *data )
   : m_len( len ), m_allocated( NULL ), m_data( NULL )
 {
@@ -567,7 +586,7 @@ Base64Key::Base64Key( string printable_key )
   string base64 = printable_key + "==";
 
   size_t len = 16;
-  if ( !base64_decode( base64.data(), 24, key, &len ) ) {
+  if ( !base64_decode_mosh( base64.data(), 24, key, &len ) ) {
     throw CryptoException( "Key must be well-formed base64." );
   }
 
@@ -585,7 +604,7 @@ string Base64Key::printable_key( void ) const
 {
   char base64[ 24 ];
 
-  base64_encode( key, 16, base64, 24 );
+  base64_encode_mosh( key, 16, base64, 24 );
 
   if ( (base64[ 23 ] != '=')
        || (base64[ 22 ] != '=') ) {
@@ -675,9 +694,22 @@ const Message Session::decrypt( const char *str, size_t len )
 
 int main(int argc, const char** argv) {
     string base64 = "4UVV8YWRGg1kBxAlhQ09ZA";
+    string content = "gAAAAAAAAAUGgH9dvmmt+jBp6WwNCx2Wb52S+ZpnTFKdkmZEUdrRPbei/eosmmaUF9uorZufiDke8e2x1J/d1Las6Pc188tvnS1nyEpkvBkbg7JDFyxByV355LqL1oRwwpQn64elhjhqtSk559AI06qMe/V8vM6WfrbECAwnuR5COUF7dGV6Us1RoIOAr4V/+JBIfoFrozJnEg==";
+    string src;
+    bool suc = Base64Decode(content, &src);
+    src = src.substr(0, src.length() - 2);
+    if (suc) {
+        cout << "Base64 decode content success." << endl;
+        for (int i = 0; i < src.length(); i++) {
+            printf("%d ", src.data()[i]);
+        }
+        cout << endl;
+    } else {
+        throw CryptoException( "Base64 decode content failed." );
+    }
 
     Base64Key key(base64);
     Session session(key);
-    session.decrypt("Hello", 5);
+    session.decrypt(src);
 }
 
