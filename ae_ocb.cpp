@@ -1105,8 +1105,8 @@ int main(int argc, const char** argv) {
         cout << "Litter endian." << endl;
     }
     string base64 = "4UVV8YWRGg1kBxAlhQ09ZA";
-    string content = "pw6oYU/M9l1X5fIGsB5eTRRt6KU5g8RL8SxPdqnoLFyUBSU/20x0gW9BohsQzTut9qXIu71vm2e4MtftudFnErJdnQQu/cK7/itNNnIJ2PjqbS6jpzOz1AFDcB5jqZQkfx2fA9M4KyCGD1j/FBVahYcIuHLvf62DA2WzDMGblVCSkY0bhzn8eglvHMPYGNk=";
-    // string content = "gAAAAAAAAACnDqhhT8z2XVfl8gawHl5NFG3opTmDxEvxLE92qegsXJQFJT/bTHSBb0GiGxDNO632pci7vW+bZ7gy1+250WcSsl2dBC79wrv+K002cgnY+OptLqOnM7PUAUNwHmOplCR/HZ8D0zgrIIYPWP8UFVqFhwi4cu9/rYMDZbMMwZuVUJKRjRuHOfx6CW8cw9gY2Q==";
+    // string content = "pw6oYU/M9l1X5fIGsB5eTRRt6KU5g8RL8SxPdqnoLFyUBSU/20x0gW9BohsQzTut9qXIu71vm2e4MtftudFnErJdnQQu/cK7/itNNnIJ2PjqbS6jpzOz1AFDcB5jqZQkfx2fA9M4KyCGD1j/FBVahYcIuHLvf62DA2WzDMGblVCSkY0bhzn8eglvHMPYGNk=";
+    string content = "gAAAAAAAAACnDqhhT8z2XVfl8gawHl5NFG3opTmDxEvxLE92qegsXJQFJT/bTHSBb0GiGxDNO632pci7vW+bZ7gy1+250WcSsl2dBC79wrv+K002cgnY+OptLqOnM7PUAUNwHmOplCR/HZ8D0zgrIIYPWP8UFVqFhwi4cu9/rYMDZbMMwZuVUJKRjRuHOfx6CW8cw9gY2Q==";
     // string content = "gAAAAAAAAAUGgH9dvmmt+jBp6WwNCx2Wb52S+ZpnTFKdkmZEUdrRPbei/eosmmaUF9uorZufiDke8e2x1J/d1Las6Pc188tvnS1nyEpkvBkbg7JDFyxByV355LqL1oRwwpQn64elhjhqtSk559AI06qMe/V8vM6WfrbECAwnuR5COUF7dGV6Us1RoIOAr4V/+JBIfoFrozJnEg==";
     string src;
     bool suc = Base64Decode(content, &src);
@@ -1129,7 +1129,7 @@ int main(int argc, const char** argv) {
     try {
         session.decrypt(src);
     } catch ( const CryptoException &e ) {
-        cout << "CryptoExcetion catched." << endl;
+        cout << "CryptoExcetion catched: " << e.text << endl;
         /* The "bad decrypt" exception needs to be non-fatal, otherwise we are
         vulnerable to an easy DoS. */
         fatal_assert( ! e.fatal );
