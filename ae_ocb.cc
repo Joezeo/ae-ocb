@@ -7,6 +7,7 @@
 #include <cstring>
 #include <stdio.h>
 #include <stdlib.h>
+#include <assert.h>
 #include "ae.h"
 #if defined(HAVE_STRINGS_H)
 #include <strings.h>
@@ -1099,18 +1100,68 @@ static void test_bad_decrypt( Session &decryption_session ) {
   fatal_assert( got_exn );
 }
 
+bool isUtf8(const std::string& str)
+{
+	char nBytes=0;//UFT8可用1-6个字节编码,ASCII用一个字节
+	unsigned char chr;
+	bool bAllAscii = true; //如果全部都是ASCII, 说明不是UTF-8
+
+	for(int i=0; i < str.length();i++)
+	{
+		chr = str[i];
+
+		// 判断是否ASCII编码,如果不是,说明有可能是UTF-8,ASCII用7位编码,
+		// 但用一个字节存,最高位标记为0,o0xxxxxxx
+		if( (chr&0x80) != 0 )
+			bAllAscii= false;
+
+		if(nBytes==0) //如果不是ASCII码,应该是多字节符,计算字节数
+		{
+			if(chr>=0x80)
+			{
+				if(chr>=0xFC&&chr<=0xFD)   nBytes=6;
+				else if(chr>=0xF8)         nBytes=5;
+				else if(chr>=0xF0)         nBytes=4;
+				else if(chr>=0xE0)         nBytes=3;
+				else if(chr>=0xC0)         nBytes=2;
+				else{
+					return false;
+				}
+				nBytes--;
+			}
+		}
+		else //多字节符的非首字节,应为 10xxxxxx
+		{
+			if( (chr&0xC0) != 0x80 ){
+				return false;
+			}
+			nBytes--;
+		}
+	}
+
+	if( nBytes > 0 ) //违返规则
+		return false;
+
+	if( bAllAscii ) //如果全部都是ASCII, 说明不是UTF-8
+		return false;
+
+	return true;
+}
+
 int main(int argc, const char** argv) {
 	const union { unsigned x; unsigned char endian; } little = { 1 };
     if (little.endian) {
         cout << "Litter endian." << endl;
     }
-    string base64 = "4UVV8YWRGg1kBxAlhQ09ZA";
-    // string content = "pw6oYU/M9l1X5fIGsB5eTRRt6KU5g8RL8SxPdqnoLFyUBSU/20x0gW9BohsQzTut9qXIu71vm2e4MtftudFnErJdnQQu/cK7/itNNnIJ2PjqbS6jpzOz1AFDcB5jqZQkfx2fA9M4KyCGD1j/FBVahYcIuHLvf62DA2WzDMGblVCSkY0bhzn8eglvHMPYGNk=";
-    string content = "gAAAAAAAAACnDqhhT8z2XVfl8gawHl5NFG3opTmDxEvxLE92qegsXJQFJT/bTHSBb0GiGxDNO632pci7vW+bZ7gy1+250WcSsl2dBC79wrv+K002cgnY+OptLqOnM7PUAUNwHmOplCR/HZ8D0zgrIIYPWP8UFVqFhwi4cu9/rYMDZbMMwZuVUJKRjRuHOfx6CW8cw9gY2Q==";
+    string base64 = "fDSpx96gmdY+CPPiINZKNQ";
+
+    string hex = "80000000000000003556203d7872423426e734314f41d4576be2f7d2bf390995f2af56b1bf1f46c4d7180f4e9dc94f07513902c8049578096d8b342f36aa46501e3a0cf212a6327318a4f1c736f4329cabb92cd9cdd4342252c0e54808310fd9c624c3fda206dafdce24b98c0d8fb234fae023a6ad6d8e4b9bde662928674520b0a4acf3199572145cad1445b5b90f33201e";
+    string content = "gAAAAAAAAAA1ViA9eHJCNCbnNDFPQdRXa+L30r85CZXyr1axvx9GxNcYD06dyU8HUTkCyASVeAltizQvNqpGUB46DPISpjJzGKTxxzb0MpyruSzZzdQ0IlLA5UgIMQ/ZxiTD/aIG2v3OJLmMDY+yNPrgI6atbY5Lm95mKShnRSCwpKzzGZVyFFytFEW1uQ8zIB4=";
+    // string content = "gAAAAAAAAACnDqhhT8z2XVfl8gawHl5NFG3opTmDxEvxLE92qegsXJQFJT/bTHSBb0GiGxDNO632pci7vW+bZ7gy1+250WcSsl2dBC79wrv+K002cgnY+OptLqOnM7PUAUNwHmOplCR/HZ8D0zgrIIYPWP8UFVqFhwi4cu9/rYMDZbMMwZuVUJKRjRuHOfx6CW8cw9gY2Q==";
     // string content = "gAAAAAAAAAUGgH9dvmmt+jBp6WwNCx2Wb52S+ZpnTFKdkmZEUdrRPbei/eosmmaUF9uorZufiDke8e2x1J/d1Las6Pc188tvnS1nyEpkvBkbg7JDFyxByV355LqL1oRwwpQn64elhjhqtSk559AI06qMe/V8vM6WfrbECAwnuR5COUF7dGV6Us1RoIOAr4V/+JBIfoFrozJnEg==";
     string src;
     bool suc = Base64Decode(content, &src);
-    src = src.substr(0, src.size() - 2);
+    src = src.substr(0, src.size() - 1);
     if (suc) {
         cout << "Base64 decode content success." << endl;
         for (int i = 0; i < src.size(); i++) {
@@ -1120,6 +1171,8 @@ int main(int argc, const char** argv) {
     } else {
         throw CryptoException( "Base64 decode content failed." );
     }
+    cout << hex << endl;
+    hexdump(src, "src");
 
     // hexdump(src, "ct");
 
@@ -1140,6 +1193,8 @@ int main(int argc, const char** argv) {
 
     uint64_t nonce_int = prng.uint64();
 
+    bool show_onece = false;
+    assert(!show_onece);
     for ( size_t i=0; i<MESSAGES_PER_SESSION; i++ ) {
         Nonce nonce( nonce_int );
         fatal_assert( nonce.val() == nonce_int );
@@ -1148,13 +1203,20 @@ int main(int argc, const char** argv) {
 
         std::string ciphertext = encryption_session.encrypt( Message( nonce, plaintext ) );
 
-        /*
-        for (int i = 0; i < ciphertext.size(); i++) {
-            printf("%d ", ciphertext.data()[i]);
+        if (!show_onece) {
+            if (isUtf8(ciphertext)) {
+                cout << "Ciphertext encode with utf-8." << endl;
+            } else {
+                cout << "Ciphertext not encode with utf-8." << endl;
+            }
+            hexdump(ciphertext, "ct");
+            for (int i = 0; i < ciphertext.size(); i++) {
+                printf("%d ", ciphertext.data()[i]);
+            }
+            cout << endl;
+            cout << " --- " << endl;
+            show_onece = true;
         }
-        cout << endl;
-        cout << " --- " << endl;
-        */
 
         Message decrypted = decryption_session.decrypt( ciphertext );
 

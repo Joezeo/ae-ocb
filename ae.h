@@ -73,13 +73,11 @@ int     ae_ctx_sizeof(void);        /* Return sizeof(ae_ctx)               */
  *
  * ----------------------------------------------------------------------- */
 
-/*
 int ae_init(ae_ctx     *ctx,
             const void *key,
             int         key_len,
             int         nonce_len,
             int         tag_len);
-*/
 
 /* --------------------------------------------------------------------------
  *
@@ -99,7 +97,6 @@ int ae_init(ae_ctx     *ctx,
  *
  * ----------------------------------------------------------------------- */
 
-/**
 int ae_encrypt(ae_ctx     *ctx,
                const void *nonce,
                const void *pt,
@@ -109,7 +106,6 @@ int ae_encrypt(ae_ctx     *ctx,
                void       *ct,
                void       *tag,
                int         final);
-*/
 
 /* --------------------------------------------------------------------------
  *
@@ -139,7 +135,6 @@ int ae_encrypt(ae_ctx     *ctx,
  *
  * ----------------------------------------------------------------------- */
 
-/*
 int ae_decrypt(ae_ctx     *ctx,
                const void *nonce,
                const void *ct,
@@ -149,7 +144,6 @@ int ae_decrypt(ae_ctx     *ctx,
                void       *pt,
                const void *tag,
                int         final);
-*/
 
 /* --------------------------------------------------------------------------
  *
