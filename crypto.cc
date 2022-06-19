@@ -1,3 +1,6 @@
+#include <iostream>
+#include <sstream>
+#include <stdio.h>
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
@@ -247,6 +250,14 @@ const Message Session::decrypt( const char *str, size_t len )
 			     AE_FINALIZE ) ) {         /* final */
     throw CryptoException( "Packet failed integrity check." );
   }
+
+  char* arr = plaintext_buffer.data();
+  int idx = 0;
+  for (char *p = arr; idx <= 1091; p++,idx++)
+    {
+        printf("%d, ", *p);
+    };
+    std::cout << std::endl;
 
   const Message ret( nonce, string( plaintext_buffer.data(), pt_len ) );
 

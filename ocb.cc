@@ -1,3 +1,6 @@
+#include <iostream>
+#include <sstream>
+#include <stdio.h>
 /*------------------------------------------------------------------------
 / OCB Version 3 Reference Code (Optimized C)     Last modified 08-SEP-2012
 /-------------------------------------------------------------------------
@@ -166,8 +169,7 @@
 /* ----------------------------------------------------------------------- */
 /* Define blocks and operations -- Patch if incorrect on your compiler.    */
 /* ----------------------------------------------------------------------- */
-
-#if __SSE2__
+#if __SSE2__de
     #include <xmmintrin.h>              /* SSE instructions and _mm_malloc */
     #include <emmintrin.h>              /* SSE2 instructions               */
     typedef __m128i block;
@@ -207,7 +209,7 @@
 		bl = _mm_slli_epi32(bl, 1);
 		return _mm_xor_si128(bl,tmp);
 	}
-#elif __ALTIVEC__ && _CALL_ELF != 2
+#elif __ALTIVEC__de && _CALL_ELF != 2
     #include <altivec.h>
     typedef vector unsigned block;
     #define xor_block(x,y)         vec_xor(x,y)
@@ -257,7 +259,7 @@
 		c = vec_sl(c,shift1);
 		return (block)vec_xor(c,t);
 	}
-#elif __ARM_NEON__
+#elif __ARM_NEON__de
     #include <arm_neon.h>
     typedef int8x16_t block;      /* Yay! Endian-neutral reads! */
     #define xor_block(x,y)             veorq_s8(x,y)
@@ -847,7 +849,10 @@ static block gen_offset_from_nonce(ae_ctx *ctx, const void *nonce)
 	tmp.u32[2] = ((uint32_t *)nonce)[1];
 	tmp.u32[3] = ((uint32_t *)nonce)[2];
 	idx = (unsigned)(tmp.u8[15] & 0x3f);   /* Get low 6 bits of nonce  */
+    std::cout << "idx: " << idx << std::endl;
 	tmp.u8[15] = tmp.u8[15] & 0xc0;        /* Zero low 6 bits of nonce */
+    printf("tmp.u8[15]: %d", tmp.u8[15]);
+    std::cout << std::endl;
 	if ( unequal_blocks(tmp.bl,ctx->cached_Top) )   { /* Cached?       */
 		ctx->cached_Top = tmp.bl;          /* Update cache, KtopStr    */
 		AES_encrypt(tmp.u8, (unsigned char *)&ctx->KtopStr, &ctx->encrypt_key);
@@ -857,6 +862,7 @@ static block gen_offset_from_nonce(ae_ctx *ctx, const void *nonce)
 		}
 		ctx->KtopStr[2] = ctx->KtopStr[0] ^
 						 (ctx->KtopStr[0] << 8) ^ (ctx->KtopStr[1] >> 56);
+        std::cout << "KstopStr: " << ctx->KtopStr[0] << " " << ctx->KtopStr[1] << " " << ctx->KtopStr[2] << std::endl;
 	}
 	return gen_offset(ctx->KtopStr, idx);
 }
@@ -1216,6 +1222,16 @@ int ae_decrypt(ae_ctx     *ctx,
     block       *ctp = (block *)ct;
     block       *ptp = (block *)pt;
 
+    char* nsn = (char *)nonce;
+    char* arr = (char *)nonce;
+    int idx = 0;
+    std::cout << "Nonce: ";
+    for (char *p = arr; idx < 12; p++,idx++)
+    {
+        printf("%d, ", *p);
+    };
+    std::cout << std::endl;
+
 	/* Reduce ct_len tag bundled in ct */
 	if ((final) && (!tag))
 		#if (OCB_TAG_LEN > 0)
@@ -1227,6 +1243,7 @@ int ae_decrypt(ae_ctx     *ctx,
     /* Non-null nonce means start of new message, init per-message values */
     if (nonce) {
         ctx->offset = gen_offset_from_nonce(ctx, nonce);
+        std::cout << "offset: " << (long long)ctx->offset.l << ":" << (long long)ctx->offset.r << std::endl;
         ctx->ad_offset = ctx->checksum   = zero_block();
         ctx->ad_blocks_processed = ctx->blocks_processed    = 0;
         if (ad_len >= 0)
@@ -1241,6 +1258,7 @@ int ae_decrypt(ae_ctx     *ctx,
     offset = ctx->offset;
     checksum  = ctx->checksum;
     i = ct_len/(BPI*16);
+    std::cout << "i: " << i << std::endl;
     if (i) {
     	block oa[BPI];
     	unsigned block_num = ctx->blocks_processed;
@@ -1256,6 +1274,8 @@ int ae_decrypt(ae_ctx     *ctx,
 			ta[2] = xor_block(oa[2], ctp[2]);
 			#if BPI == 4
 				oa[3] = xor_block(oa[2], getL(ctx, ntz(block_num)));
+                // std::cout << "ntz: " << getL(ctx, ntz(block_num)).l << ":" << getL(ctx, ntz(block_num)).r << std::endl;
+                // std::cout << "ntz: " << ntz(block_num) << std::endl;
 				ta[3] = xor_block(oa[3], ctp[3]);
 			#elif BPI == 8
 				oa[3] = xor_block(oa[2], ctx->L[2]);
@@ -1394,6 +1414,7 @@ int ae_decrypt(ae_ctx     *ctx,
 			}
 		}
     }
+
     return ct_len;
  }
 
